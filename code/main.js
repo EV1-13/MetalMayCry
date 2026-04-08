@@ -9,7 +9,7 @@ const player = {
     height: 50,
     velocityX: 0,
     velocityY: 0,
-    speed: 7,
+    speed: 8,
     jumpPower: -18,
     gravity: 0.8,
     onGround: false,
@@ -211,7 +211,7 @@ function generateEnemy(x, y, type = 'melee', onFloor = false) {
 }
 
 function spawnProjectile(x, y, vx, vy) {
-    projectiles.push({ x, y, vx, vy, width: 10, height: 10, life: 120 });
+    projectiles.push({ x, y, vx, vy, width: 20, height: 20, life: 120 });
 }
 
 function applyPlayerAttack(type) {
@@ -222,48 +222,50 @@ function applyPlayerAttack(type) {
         damage = 1;
         if (keys.up) {
             attackBox = {
-                x: player.x + 10,
-                y: player.y - 70,
-                width: player.width - 20,
-                height: 70
+                x: player.x - 20,
+                y: player.y - 50,
+                width: player.width + 40,
+                height: 50
             };
         } else if (keys.down) {
             attackBox = {
-                x: player.x + 10,
+                x: player.x - 20,
                 y: player.y + player.height,
-                width: player.width - 20,
-                height: 70
+                width: player.width + 40,
+                height: 50
             };
         } else {
+            const attackWidth = 50;
             attackBox = {
-                x: player.x + (player.facing === 1 ? player.width : -55),
-                y: player.y + 10,
-                width: 55,
-                height: player.height - 20
+                x: player.x + (player.facing === 1 ? player.width : -attackWidth),
+                y: player.y - 20,
+                width: attackWidth,
+                height: player.height + 40
             };
         }
     } else if (type === 'heavy') {
         damage = 2;
         if (keys.up) {
             attackBox = {
-                x: player.x + 5,
-                y: player.y - 90,
-                width: player.width - 10,
-                height: 90
+                x: player.x - 20,
+                y: player.y - 70,
+                width: player.width + 40,
+                height: 70
             };
         } else if (keys.down) {
             attackBox = {
-                x: player.x + 5,
+                x: player.x - 20,
                 y: player.y + player.height,
-                width: player.width - 10,
-                height: 90
+                width: player.width + 40,
+                height: 70
             };
         } else {
+            const attackWidth = 70;
             attackBox = {
-                x: player.x + (player.facing === 1 ? player.width : -75),
-                y: player.y + 5,
-                width: 75,
-                height: player.height - 10
+                x: player.x + (player.facing === 1 ? player.width : -attackWidth),
+                y: player.y - 20,
+                width: attackWidth,
+                height: player.height + 40
             };
         }
     } else if (type === 'special') {
@@ -306,20 +308,21 @@ function startPlayerAttack(type) {
 
     if (type === 'light') {
         player.attackState = 'light';
-        player.attackTimer = 8;
-        player.attackEffect = { type: 'light', duration: 10, direction };
+        player.attackTimer = 18;
+        player.attackEffect = { type: 'light', duration: 18, direction };
         applyPlayerAttack('light');
     } else if (type === 'heavy') {
         player.attackState = 'heavy';
-        player.attackTimer = 12;
-        player.attackEffect = { type: 'heavy', duration: 16, direction };
-        player.heavyCooldown = 60;
+        player.attackTimer = 24;
+        player.attackEffect = { type: 'heavy', duration: 24, direction };
+        player.heavyCooldown = 24;
         applyPlayerAttack('heavy');
     } else if (type === 'special') {
         player.attackState = 'special';
-        player.attackTimer = 24;
-        player.attackEffect = { type: 'special', duration: 24 };
+        player.attackTimer = 28;
+        player.attackEffect = { type: 'special', duration: 28 };
         player.specialCooldown = player.specialCooldownMax;
+        player.immunity = player.attackTimer; // Invincible for the duration of the special
         applyPlayerAttack('special');
     }
 }
@@ -328,56 +331,59 @@ function startPlayerAttack(type) {
 function update() {
     if (gameOver) return;
 
-    // Horizontal movement
-    let currentSpeed = keys.shift ? 7 : 5;
-    if (keys.left) {
-        player.velocityX = -currentSpeed;
-        player.facing = -1;
-    } else if (keys.right) {
-        player.velocityX = currentSpeed;
-        player.facing = 1;
+    if (player.attackState === 'special') {
+        player.velocityX = 0;
+        player.velocityY = 0;
+        player.immunity = Math.max(player.immunity, 1);
     } else {
-        // Ease to stop
-        player.velocityX *= 0.8;
-    }
-
-    // Dashing
-    if (keys.j && player.dashCooldown == 0 && !player.dashing) {
-        player.dashing = true;
-        player.dashTimer = 12;
-        player.immunity = 12; // Temporary immunity during dash
-        let xDir = 0;
-        let yDir = 0;
-        if (keys.right) xDir += 1;
-        if (keys.left) xDir -= 1;
-        if (keys.jump) yDir -= 1;
-        if (keys.up) yDir -= 1;
-        if (keys.down) yDir += 1;
-        if (xDir === 0 && yDir === 0) {
-            xDir = 1; // Default to right
-        }
-        let dashStrength = 10;
-        const directVertical = xDir === 0 && yDir !== 0;
-        if (directVertical) {
-            dashStrength += 8;
-        }
-        if (keys.left || keys.right) {
-            dashStrength += 10;
-        }
-        if (keys.shift) {
-            dashStrength += 20;
-        }
-        const length = Math.sqrt(xDir * xDir + yDir * yDir);
-        if (length > 0) {
-            player.dashTargetX = (xDir / length) * dashStrength;
-            player.dashTargetY = (yDir / length) * dashStrength;
+        // Horizontal movement
+        let currentSpeed = player.speed;
+        if (keys.left) {
+            player.velocityX = -currentSpeed;
+            player.facing = -1;
+        } else if (keys.right) {
+            player.velocityX = currentSpeed;
+            player.facing = 1;
         } else {
-            player.dashTargetX = dashStrength;
-            player.dashTargetY = 0;
+            // Ease to stop
+            player.velocityX *= 0.8;
         }
-        player.dashVelocityX = player.dashTargetX;
-        player.dashVelocityY = player.dashTargetY;
-        player.dashCooldown = 40;
+
+        // Dashing
+        if (keys.j && player.dashCooldown == 0 && !player.dashing) {
+            player.dashing = true;
+            player.dashTimer = 12;
+            player.immunity = 12; // Temporary immunity during dash
+            let xDir = 0;
+            let yDir = 0;
+            if (keys.right) xDir += 1;
+            if (keys.left) xDir -= 1;
+            if (keys.jump) yDir -= 1;
+            if (keys.up) yDir -= 1;
+            if (keys.down) yDir += 1;
+            if (xDir === 0 && yDir === 0) {
+                xDir = 1; // Default to right
+            }
+            let dashStrength = 15;
+            const directVertical = xDir === 0 && yDir !== 0;
+            if (directVertical) {
+                dashStrength += 8;
+            }
+            if (keys.left || keys.right) {
+                dashStrength += 10;
+            }
+            const length = Math.sqrt(xDir * xDir + yDir * yDir);
+            if (length > 0) {
+                player.dashTargetX = (xDir / length) * dashStrength;
+                player.dashTargetY = (yDir / length) * dashStrength;
+            } else {
+                player.dashTargetX = dashStrength;
+                player.dashTargetY = 0;
+            }
+            player.dashVelocityX = player.dashTargetX;
+            player.dashVelocityY = player.dashTargetY;
+            player.dashCooldown = 40;
+        }
     }
     if (player.dashing) {
         // Strong initial dash, then ease out at the end
@@ -401,11 +407,10 @@ function update() {
     }
 
     // Jumping
-    if (!player.dashing) {
+    if (!player.dashing && player.attackState !== 'special') {
         if (keys.jump && player.onGround) {
             player.velocityY = player.jumpPower;
             player.onGround = false;
-            // Longer jump if sprinting
             if (keys.ctrl) {
                 player.velocityX += player.facing * 3;
             }
@@ -708,23 +713,23 @@ function draw() {
             ctx.strokeStyle = '#FFD700';
             ctx.lineWidth = 4;
             if (player.attackEffect.direction === 'up') {
-                ctx.strokeRect(player.x + 10, player.y - 70, player.width - 20, 70);
+                ctx.strokeRect(player.x - 20, player.y - 50, player.width + 40, 50);
             } else if (player.attackEffect.direction === 'down') {
-                ctx.strokeRect(player.x + 10, player.y + player.height, player.width - 20, 70);
+                ctx.strokeRect(player.x - 20, player.y + player.height, player.width + 40, 50);
             } else {
-                const x = player.x + (player.facing === 1 ? player.width : -55);
-                ctx.strokeRect(x, player.y + 10, 55, player.height - 20);
+                const x = player.x + (player.facing === 1 ? player.width : -50);
+                ctx.strokeRect(x, player.y - 20, 50, player.height + 40);
             }
         } else if (player.attackEffect.type === 'heavy') {
             ctx.strokeStyle = '#FF8C00';
             ctx.lineWidth = 4;
             if (player.attackEffect.direction === 'up') {
-                ctx.strokeRect(player.x + 5, player.y - 90, player.width - 10, 90);
+                ctx.strokeRect(player.x - 20, player.y - 70, player.width + 40, 70);
             } else if (player.attackEffect.direction === 'down') {
-                ctx.strokeRect(player.x + 5, player.y + player.height, player.width - 10, 90);
+                ctx.strokeRect(player.x - 20, player.y + player.height, player.width + 40, 70);
             } else {
-                const x = player.x + (player.facing === 1 ? player.width : -75);
-                ctx.strokeRect(x, player.y + 5, 75, player.height - 10);
+                const x = player.x + (player.facing === 1 ? player.width : -70);
+                ctx.strokeRect(x, player.y - 20, 70, player.height + 40);
             }
         } else if (player.attackEffect.type === 'special') {
             ctx.strokeStyle = '#7CFC00';
