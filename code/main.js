@@ -15,6 +15,7 @@ const player = {
     onGround: false,
     health: 3,
     immunity: 0,
+    immunitySource: null,
     facing: 1,
     dashing: false,
     dashTimer: 0,
@@ -31,14 +32,41 @@ const player = {
     specialCooldownMax: 360,
     points: 0,
     style: 0,
-    lastAttackType: null
+    lastAttackType: null,
+    kills: 0
 };
 
 // Camera
 let cameraX = 0;
+let deathFreezeTimer = 0;
+const deathFreezeDuration = 84;
 
 // Game state
-let gameOver = false;
+let gameState = 'title'; // 'title', 'playing', 'gameOver'
+
+// Message system
+let messages = [
+    { text: "hi. hello. hi.", duration: 300 }, // frames
+    { text: "is this reaching you?", duration: 300 }
+];
+let currentMessageIndex = -1;
+let messageTypingIndex = 0;
+let messageTimer = 0;
+let messageActive = false;
+let killThresholds = [10, 20, 30, 40];
+let nextKillThresholdIndex = 0;
+let killThresholdMessageActive = false;
+let killThresholdMessagePhase = 0;
+let killThresholdMessageIndex = -1;
+let killThresholdMessageTypingIndex = 0;
+const killThresholdMessageParts = [
+    ['getting there.', 'keep going'],
+    ['c\'mon.', 'can\'t stop now.'],
+    ['so close.', 'i can feel it.'],
+    ['we\'re here']
+];
+let killThresholdMessageTimer = 0;
+let killThresholdMessageDuration = 0;
 
 // Platforms and enemies
 let platforms = [];
@@ -107,7 +135,7 @@ document.addEventListener('keydown', (e) => {
             keys.e = true;
             break;
         case 'KeyR':
-            if (gameOver) reset();
+            if (gameState === 'gameOver') reset();
             break;
     }
 });
@@ -154,6 +182,61 @@ document.addEventListener('keyup', (e) => {
         case 'KeyE':
             keys.e = false;
             break;
+    }
+});
+
+// Mouse event listener for buttons
+canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (gameState === 'title') {
+        // Play button: centered, below title
+        const playX = canvas.width / 2 - 50;
+        const playY = canvas.height / 2 + 50;
+        const playWidth = 100;
+        const playHeight = 40;
+        if (x >= playX && x <= playX + playWidth && y >= playY && y <= playY + playHeight) {
+            startGame();
+        }
+        // Quit button: below play
+        const quitX = canvas.width / 2 - 50;
+        const quitY = canvas.height / 2 + 110;
+        const quitWidth = 100;
+        const quitHeight = 40;
+        if (x >= quitX && x <= quitX + quitWidth && y >= quitY && y <= quitY + quitHeight) {
+            if (confirm('Are you sure you want to quit?')) {
+                window.close();
+            }
+        }
+    } else if (gameState === 'gameOver') {
+        // Restart button
+        const restartX = canvas.width / 2 - 50;
+        const restartY = canvas.height / 2 + 50;
+        const restartWidth = 100;
+        const restartHeight = 40;
+        if (x >= restartX && x <= restartX + restartWidth && y >= restartY && y <= restartY + restartHeight) {
+            reset();
+        }
+        // Title button
+        const titleX = canvas.width / 2 - 50;
+        const titleY = canvas.height / 2 + 110;
+        const titleWidth = 100;
+        const titleHeight = 40;
+        if (x >= titleX && x <= titleX + titleWidth && y >= titleY && y <= titleY + titleHeight) {
+            gameState = 'title';
+        }
+        // Quit button
+        const quitX = canvas.width / 2 - 50;
+        const quitY = canvas.height / 2 + 170;
+        const quitWidth = 100;
+        const quitHeight = 40;
+        if (x >= quitX && x <= quitX + quitWidth && y >= quitY && y <= quitY + quitHeight) {
+            if (confirm('Are you sure you want to quit?')) {
+                window.close();
+            }
+        }
     }
 });
 
@@ -206,12 +289,89 @@ function generateEnemy(x, y, type = 'melee', onFloor = false) {
         onGround: false,
         onPlatform,
         attackCooldown,
-        shootCooldown
+        shootCooldown,
+        damageFlash: 0,
+        deathTimer: 0
     });
 }
 
 function spawnProjectile(x, y, vx, vy) {
     projectiles.push({ x, y, vx, vy, width: 20, height: 20, life: 120 });
+}
+
+function getPlayerInvincibilityColor() {
+    if (player.immunitySource === 'dash' || player.immunitySource === 'special') {
+        return '#A020F0';
+    }
+    if (player.immunitySource === 'damage') {
+        return '#8B0000';
+    }
+    return '#FFFF00';
+}
+
+function resolveCharacterEnemyCollision(enemy) {
+    if (player.dashing || enemy.health <= 0 || !checkCollision(player, enemy)) return;
+
+    const playerCenterX = player.x + player.width / 2;
+    const playerCenterY = player.y + player.height / 2;
+    const enemyCenterX = enemy.x + enemy.width / 2;
+    const enemyCenterY = enemy.y + enemy.height / 2;
+    const overlapX = player.width / 2 + enemy.width / 2 - Math.abs(playerCenterX - enemyCenterX);
+    const overlapY = player.height / 2 + enemy.height / 2 - Math.abs(playerCenterY - enemyCenterY);
+
+    if (overlapX <= 0 || overlapY <= 0) return;
+
+    if (overlapX < overlapY) {
+        const playerPushRatio = enemy.type === 'melee' ? 0.75 : 0.5;
+        const enemyPushRatio = 1 - playerPushRatio;
+        const playerPush = overlapX * playerPushRatio;
+        const enemyPush = overlapX * enemyPushRatio;
+        if (playerCenterX < enemyCenterX) {
+            player.x -= playerPush;
+            enemy.x += enemyPush;
+        } else {
+            player.x += playerPush;
+            enemy.x -= enemyPush;
+        }
+        player.velocityX = 0;
+        enemy.velocityX = 0;
+    } else {
+        const playerPushRatio = enemy.type === 'melee' ? 0.75 : 0.5;
+        const enemyPushRatio = 1 - playerPushRatio;
+        const playerPush = overlapY * playerPushRatio;
+        const enemyPush = overlapY * enemyPushRatio;
+        if (playerCenterY < enemyCenterY) {
+            player.y -= playerPush;
+            enemy.y += enemyPush;
+            player.velocityY = 0;
+            player.onGround = true;
+        } else {
+            player.y += playerPush;
+            enemy.y -= enemyPush;
+            if (player.velocityY < 0) {
+                player.velocityY = 0;
+            }
+        }
+        enemy.velocityY = Math.max(0, enemy.velocityY);
+    }
+
+    player.x = Math.max(cameraX, player.x);
+}
+
+function triggerPlayerDeath() {
+    if (deathFreezeTimer > 0) return;
+
+    deathFreezeTimer = deathFreezeDuration;
+    player.velocityX = 0;
+    player.velocityY = 0;
+    player.immunitySource = null;
+    player.dashing = false;
+    player.dashTimer = 0;
+    player.dashVelocityX = 0;
+    player.dashVelocityY = 0;
+    player.attackState = null;
+    player.attackTimer = 0;
+    player.attackEffect = null;
 }
 
 function applyPlayerAttack(type) {
@@ -288,7 +448,21 @@ function applyPlayerAttack(type) {
         }
         if (hit) {
             e.health -= damage;
+            e.damageFlash = 16; // Flash white for 16 frames
             if (e.health <= 0) {
+                if (e.deathTimer <= 0) {
+                    e.deathTimer = 12;
+                }
+                player.kills++;
+                if (nextKillThresholdIndex < killThresholds.length && player.kills === killThresholds[nextKillThresholdIndex]) {
+                    killThresholdMessageIndex = nextKillThresholdIndex;
+                    killThresholdMessagePhase = 0;
+                    killThresholdMessageTypingIndex = 0;
+                    killThresholdMessageDuration = messages[0].duration;
+                    killThresholdMessageTimer = 0;
+                    killThresholdMessageActive = true;
+                    nextKillThresholdIndex++;
+                }
                 player.points += 10;
                 player.style = Math.min(100, player.style + (player.lastAttackType === type ? 5 : 10));
                 player.lastAttackType = type;
@@ -298,6 +472,7 @@ function applyPlayerAttack(type) {
 }
 
 function startPlayerAttack(type) {
+    if (deathFreezeTimer > 0) return;
     if (player.attackState) return;
     if (type === 'heavy' && player.heavyCooldown > 0) return;
     if (type === 'special' && player.specialCooldown > 0) return;
@@ -323,13 +498,60 @@ function startPlayerAttack(type) {
         player.attackEffect = { type: 'special', duration: 28 };
         player.specialCooldown = player.specialCooldownMax;
         player.immunity = player.attackTimer; // Invincible for the duration of the special
+        player.immunitySource = 'special';
         applyPlayerAttack('special');
     }
 }
 
 // Update function
 function update() {
-    if (gameOver) return;
+    if (gameState !== 'playing') return;
+
+    if (deathFreezeTimer > 0) {
+        deathFreezeTimer--;
+        if (deathFreezeTimer <= 0) {
+            gameState = 'gameOver';
+        }
+        return;
+    }
+
+    // Handle message typing
+    if (messageActive) {
+        if (messageTypingIndex < messages[currentMessageIndex].text.length) {
+            messageTypingIndex++;
+        } else {
+            messageTimer++;
+            if (messageTimer >= messages[currentMessageIndex].duration) {
+                currentMessageIndex++;
+                if (currentMessageIndex < messages.length) {
+                    messageTypingIndex = 0;
+                    messageTimer = 0;
+                } else {
+                    messageActive = false;
+                    currentMessageIndex = -1;
+                }
+            }
+        }
+    }
+    if (killThresholdMessageActive) {
+        const parts = killThresholdMessageParts[killThresholdMessageIndex] || [];
+        const currentText = parts[killThresholdMessagePhase] || '';
+        if (killThresholdMessageTypingIndex < currentText.length) {
+            killThresholdMessageTypingIndex++;
+        } else {
+            killThresholdMessageTimer++;
+            if (killThresholdMessageTimer >= killThresholdMessageDuration) {
+                if (killThresholdMessagePhase === 0 && parts.length > 1) {
+                    killThresholdMessagePhase = 1;
+                    killThresholdMessageTypingIndex = 0;
+                    killThresholdMessageTimer = 0;
+                } else {
+                    killThresholdMessageActive = false;
+                    killThresholdMessageIndex = -1;
+                }
+            }
+        }
+    }
 
     if (player.attackState === 'special') {
         player.velocityX = 0;
@@ -354,6 +576,7 @@ function update() {
             player.dashing = true;
             player.dashTimer = 12;
             player.immunity = 12; // Temporary immunity during dash
+            player.immunitySource = 'dash';
             let xDir = 0;
             let yDir = 0;
             if (keys.right) xDir += 1;
@@ -428,9 +651,15 @@ function update() {
     // Update position
     player.x += player.velocityX;
     player.y += player.velocityY;
+    player.x = Math.max(cameraX, player.x);
 
     // Update immunity
-    if (player.immunity > 0) player.immunity--;
+    if (player.immunity > 0) {
+        player.immunity--;
+        if (player.immunity <= 0) {
+            player.immunitySource = null;
+        }
+    }
 
     // Update cooldowns
     if (player.heavyCooldown > 0) player.heavyCooldown--;
@@ -449,7 +678,7 @@ function update() {
     }
 
     // Update camera
-    cameraX = Math.max(0, player.x - canvas.width / 2);
+    cameraX = Math.max(cameraX, player.x - canvas.width / 2, 0);
 
     // Generate platforms
     while (platforms.length === 0 || platforms[platforms.length - 1].x < cameraX + canvas.width + 200) {
@@ -469,8 +698,8 @@ function update() {
     // Remove off-screen platforms
     platforms = platforms.filter(p => p.x + p.width > cameraX - 100);
 
-    // Remove off-screen or dead enemies
-    enemies = enemies.filter(e => e.health > 0 && e.x + e.width > cameraX - 100 && e.y < canvas.height + 100);
+    // Remove off-screen or dead enemies after death flash is finished
+    enemies = enemies.filter(e => (e.health > 0 || e.deathTimer > 0) && e.x + e.width > cameraX - 100 && e.y < canvas.height + 100);
 
     // Remove off-screen health packs
     healthPacks = healthPacks.filter(pack => pack.x + pack.width > cameraX - 100);
@@ -482,10 +711,12 @@ function update() {
         p.life--;
         if (checkCollision(p, player) && player.immunity == 0) {
             player.health--;
+            player.style = Math.max(0, player.style - 10);
             player.immunity = 180;
+            player.immunitySource = 'damage';
             p.life = 0;
             if (player.health <= 0) {
-                gameOver = true;
+                triggerPlayerDeath();
             }
         }
     }
@@ -504,6 +735,10 @@ function update() {
         }
     }
 
+    for (let e of enemies) {
+        resolveCharacterEnemyCollision(e);
+    }
+
     // Health pack collisions
     healthPacks = healthPacks.filter(pack => {
         if (checkCollision(player, pack)) {
@@ -519,12 +754,14 @@ function update() {
             const attackDirectionMatch = (player.x >= e.x && e.facing === 1) || (player.x < e.x && e.facing === -1);
             if (attackDirectionMatch) {
                 player.health--;
+                player.style = Math.max(0, player.style - 10);
                 player.immunity = 60; // 1 second at 60fps
+                player.immunitySource = 'damage';
                 e.attackCooldown = 60;
                 e.attackState = null;
                 e.attacking = false;
                 if (player.health <= 0) {
-                    gameOver = true;
+                    triggerPlayerDeath();
                 }
                 e.x += 50;
             }
@@ -533,6 +770,17 @@ function update() {
 
     // Update enemies
     for (let e of enemies) {
+        // Handle dead enemies during their flash timer
+        if (e.health <= 0) {
+            if (e.deathTimer > 0) {
+                e.deathTimer--;
+            }
+            if (e.damageFlash > 0) {
+                e.damageFlash--;
+            }
+            continue;
+        }
+
         // Apply gravity
         e.velocityY += e.gravity;
         e.y += e.velocityY;
@@ -561,6 +809,9 @@ function update() {
         }
         if (e.shootCooldown > 0) {
             e.shootCooldown--;
+        }
+        if (e.damageFlash > 0) {
+            e.damageFlash--;
         }
 
         if (e.type === 'melee') {
@@ -644,6 +895,8 @@ function update() {
                 }
             }
         }
+
+        resolveCharacterEnemyCollision(e);
     }
 
     // Update projectiles
@@ -659,160 +912,272 @@ function draw() {
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Save context for camera
-    ctx.save();
-    ctx.translate(-cameraX, 0);
+    if (gameState === 'title') {
+        // Draw title screen background
+        ctx.fillStyle = '#FFF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw ground (but since endless, maybe not needed, or draw as platforms)
-    // For simplicity, keep ground but platforms override
+        // Draw title screen
+        ctx.fillStyle = '#000';
+        ctx.font = '50px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Metal May Cry', canvas.width / 2, canvas.height / 2 - 50);
+        ctx.textAlign = 'left';
 
-    // Draw platforms
-    ctx.fillStyle = '#8B4513';
-    for (let p of platforms) {
-        ctx.fillRect(p.x, p.y, p.width, p.height);
-    }
+        // Play button
+        ctx.fillStyle = '#4CAF50';
+        ctx.fillRect(canvas.width / 2 - 50, canvas.height / 2 + 50, 100, 40);
+        ctx.fillStyle = '#FFF';
+        ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Play', canvas.width / 2, canvas.height / 2 + 75);
+        ctx.textAlign = 'left';
 
-    // Draw health packs
-    ctx.fillStyle = '#FF69B4'; // Pink
-    for (let pack of healthPacks) {
-        ctx.fillRect(pack.x, pack.y, pack.width, pack.height);
-    }
+        // Quit button
+        ctx.fillStyle = '#F44336';
+        ctx.fillRect(canvas.width / 2 - 50, canvas.height / 2 + 110, 100, 40);
+        ctx.fillStyle = '#FFF';
+        ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Quit', canvas.width / 2, canvas.height / 2 + 135);
+        ctx.textAlign = 'left';
+    } else if (gameState === 'playing') {
+        const deathFreezeRatio = deathFreezeTimer / deathFreezeDuration;
+        const shakeStrength = deathFreezeTimer > 0 ? Math.max(2, Math.ceil(deathFreezeRatio * 10)) : 0;
+        const shakeX = shakeStrength > 0 ? (Math.random() * 2 - 1) * shakeStrength : 0;
+        const shakeY = shakeStrength > 0 ? (Math.random() * 2 - 1) * shakeStrength : 0;
 
-    // Draw floor
-    ctx.fillStyle = '#654321';
-    ctx.fillRect(cameraX, canvas.height - 20, canvas.width, 20);
-
-    // Draw enemies
-    for (let e of enemies) {
-        if (e.type === 'melee') {
-            ctx.fillStyle = '#FF4500'; // melee enemies are orange-red
-        } else if (e.type === 'ranged') {
-            ctx.fillStyle = '#3399FF'; // ranged enemies are blue
-        } else {
-            ctx.fillStyle = '#00FF00';
-        }
-        ctx.fillRect(e.x, e.y, e.width, e.height);
-
-        if (e.type === 'melee' && e.attacking) {
-            ctx.strokeStyle = '#FFFF00';
-            ctx.lineWidth = 3;
-            ctx.strokeRect(e.x - 2, e.y - 2, e.width + 4, e.height + 4);
-
-            const attackWidth = 30;
-            const attackX = e.x + (e.facing === 1 ? e.width : -attackWidth);
-            ctx.fillStyle = 'rgba(255, 255, 0, 0.35)';
-            ctx.fillRect(attackX, e.y + 8, attackWidth, e.height - 16);
-        }
-    }
-
-    // Draw player attack visuals
-    if (player.attackEffect) {
         ctx.save();
-        ctx.globalAlpha = 0.7;
-        if (player.attackEffect.type === 'light') {
-            ctx.strokeStyle = '#FFD700';
-            ctx.lineWidth = 4;
-            if (player.attackEffect.direction === 'up') {
-                ctx.strokeRect(player.x - 20, player.y - 50, player.width + 40, 50);
-            } else if (player.attackEffect.direction === 'down') {
-                ctx.strokeRect(player.x - 20, player.y + player.height, player.width + 40, 50);
-            } else {
-                const x = player.x + (player.facing === 1 ? player.width : -50);
-                ctx.strokeRect(x, player.y - 20, 50, player.height + 40);
-            }
-        } else if (player.attackEffect.type === 'heavy') {
-            ctx.strokeStyle = '#FF8C00';
-            ctx.lineWidth = 4;
-            if (player.attackEffect.direction === 'up') {
-                ctx.strokeRect(player.x - 20, player.y - 70, player.width + 40, 70);
-            } else if (player.attackEffect.direction === 'down') {
-                ctx.strokeRect(player.x - 20, player.y + player.height, player.width + 40, 70);
-            } else {
-                const x = player.x + (player.facing === 1 ? player.width : -70);
-                ctx.strokeRect(x, player.y - 20, 70, player.height + 40);
-            }
-        } else if (player.attackEffect.type === 'special') {
-            ctx.strokeStyle = '#7CFC00';
-            ctx.lineWidth = 6;
-            ctx.beginPath();
-            ctx.arc(player.x + player.width / 2, player.y + player.height / 2, 120, 0, Math.PI * 2);
-            ctx.stroke();
+        ctx.translate(shakeX, shakeY);
+
+        // Save context for camera
+        ctx.save();
+        ctx.translate(-cameraX, 0);
+
+        // Draw platforms
+        ctx.fillStyle = '#8B4513';
+        for (let p of platforms) {
+            ctx.fillRect(p.x, p.y, p.width, p.height);
         }
+
+        // Draw health packs
+        ctx.fillStyle = '#FF69B4'; // Pink
+        for (let pack of healthPacks) {
+            ctx.fillRect(pack.x, pack.y, pack.width, pack.height);
+        }
+
+        // Draw floor
+        ctx.fillStyle = '#654321';
+        ctx.fillRect(cameraX, canvas.height - 20, canvas.width, 20);
+
+        // Draw enemies
+        for (let e of enemies) {
+            if (e.damageFlash > 0) {
+                ctx.fillStyle = '#FFFFFF'; // Flash white when damaged
+            } else if (e.type === 'melee') {
+                ctx.fillStyle = '#FF4500'; // melee enemies are orange-red
+            } else if (e.type === 'ranged') {
+                ctx.fillStyle = '#3399FF'; // ranged enemies are blue
+            } else {
+                ctx.fillStyle = '#00FF00';
+            }
+            ctx.fillRect(e.x, e.y, e.width, e.height);
+
+            if (e.type === 'melee' && e.attacking) {
+                ctx.strokeStyle = '#FFFF00';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(e.x - 2, e.y - 2, e.width + 4, e.height + 4);
+
+                const attackWidth = 30;
+                const attackX = e.x + (e.facing === 1 ? e.width : -attackWidth);
+                ctx.fillStyle = 'rgba(255, 255, 0, 0.35)';
+                ctx.fillRect(attackX, e.y + 8, attackWidth, e.height - 16);
+            }
+        }
+
+        // Draw player attack visuals
+        if (player.attackEffect) {
+            ctx.save();
+            ctx.globalAlpha = 0.7;
+            if (player.attackEffect.type === 'light') {
+                ctx.strokeStyle = '#FFD700';
+                ctx.lineWidth = 4;
+                if (player.attackEffect.direction === 'up') {
+                    ctx.strokeRect(player.x - 20, player.y - 50, player.width + 40, 50);
+                } else if (player.attackEffect.direction === 'down') {
+                    ctx.strokeRect(player.x - 20, player.y + player.height, player.width + 40, 50);
+                } else {
+                    const x = player.x + (player.facing === 1 ? player.width : -50);
+                    ctx.strokeRect(x, player.y - 20, 50, player.height + 40);
+                }
+            } else if (player.attackEffect.type === 'heavy') {
+                ctx.strokeStyle = '#FF8C00';
+                ctx.lineWidth = 4;
+                if (player.attackEffect.direction === 'up') {
+                    ctx.strokeRect(player.x - 20, player.y - 70, player.width + 40, 70);
+                } else if (player.attackEffect.direction === 'down') {
+                    ctx.strokeRect(player.x - 20, player.y + player.height, player.width + 40, 70);
+                } else {
+                    const x = player.x + (player.facing === 1 ? player.width : -70);
+                    ctx.strokeRect(x, player.y - 20, 70, player.height + 40);
+                }
+            } else if (player.attackEffect.type === 'special') {
+                ctx.strokeStyle = '#7CFC00';
+                ctx.lineWidth = 6;
+                ctx.beginPath();
+                ctx.arc(player.x + player.width / 2, player.y + player.height / 2, 120, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // Draw projectiles
+        ctx.fillStyle = '#FF00FF';
+        for (let p of projectiles) {
+            ctx.fillRect(p.x, p.y, p.width, p.height);
+        }
+
+        // Draw player
+        ctx.fillStyle = deathFreezeTimer > 0 ? '#000000' : (player.immunity > 0 ? getPlayerInvincibilityColor() : '#FF0000');
+        ctx.fillRect(player.x, player.y, player.width, player.height);
+
+        // Draw immunity visual
+        if (player.immunity > 0) {
+            ctx.strokeStyle = getPlayerInvincibilityColor();
+            ctx.lineWidth = 4;
+            ctx.strokeRect(player.x - 2, player.y - 2, player.width + 4, player.height + 4);
+        }
+
+        // Restore context
         ctx.restore();
-    }
 
-    // Draw projectiles
-    ctx.fillStyle = '#FF00FF';
-    for (let p of projectiles) {
-        ctx.fillRect(p.x, p.y, p.width, p.height);
-    }
+        // Draw UI
+        ctx.fillStyle = '#000';
+        ctx.font = '20px Arial';
+        ctx.fillText(`Health: ${player.health}`, 10, 30);
+        ctx.fillText(`Kills: ${player.kills}`, 10, 120);
 
-    // Draw player
-    ctx.fillStyle = player.immunity > 0 ? '#FFFF00' : '#FF0000';
-    ctx.fillRect(player.x, player.y, player.width, player.height);
-
-    // Draw immunity visual
-    if (player.immunity > 0) {
-        ctx.strokeStyle = '#FFFF00';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(player.x - 2, player.y - 2, player.width + 4, player.height + 4);
-    }
-
-    // Restore context
-    ctx.restore();
-
-    // Draw UI
-    ctx.fillStyle = '#000';
-    ctx.font = '20px Arial';
-    ctx.fillText(`Health: ${player.health}`, 10, 30);
-
-    // Special attack cooldown UI
-    const cooldownWidth = 160;
-    const cooldownHeight = 18;
-    const cooldownX = canvas.width - cooldownWidth - 20;
-    const cooldownY = 20;
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(cooldownX, cooldownY, cooldownWidth, cooldownHeight);
-    if (player.specialCooldown > 0) {
-        const ratio = 1 - player.specialCooldown / player.specialCooldownMax;
-        ctx.fillStyle = '#7CFC00';
-        ctx.fillRect(cooldownX + 1, cooldownY + 1, Math.max(0, (cooldownWidth - 2) * ratio), cooldownHeight - 2);
+        // Style bar UI
+        const styleWidth = 160;
+        const styleHeight = 18;
+        const styleX = 10;
+        const styleY = 60;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(styleX, styleY, styleWidth, styleHeight);
+        const styleRatio = player.style / 100;
+        ctx.fillStyle = '#FFD700'; // Gold color for style
+        ctx.fillRect(styleX + 1, styleY + 1, (styleWidth - 2) * styleRatio, styleHeight - 2);
         ctx.fillStyle = '#000';
         ctx.font = '14px Arial';
-        ctx.fillText(`Special: ${Math.ceil(player.specialCooldown / 60)}s`, cooldownX + 6, cooldownY + 14);
-    } else {
-        ctx.fillStyle = '#7CFC00';
-        ctx.fillRect(cooldownX + 1, cooldownY + 1, cooldownWidth - 2, cooldownHeight - 2);
-        ctx.fillStyle = '#000';
-        ctx.font = '14px Arial';
-        ctx.fillText('Special Ready', cooldownX + 6, cooldownY + 14);
-    }
+        ctx.fillText(`Style: ${Math.floor(player.style)}`, styleX + 6, styleY + 14);
 
-    // Style bar UI
-    const styleWidth = 160;
-    const styleHeight = 18;
-    const styleX = 10;
-    const styleY = 60;
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(styleX, styleY, styleWidth, styleHeight);
-    const styleRatio = player.style / 100;
-    ctx.fillStyle = '#FFD700'; // Gold color for style
-    ctx.fillRect(styleX + 1, styleY + 1, (styleWidth - 2) * styleRatio, styleHeight - 2);
-    ctx.fillStyle = '#000';
-    ctx.font = '14px Arial';
-    ctx.fillText(`Style: ${Math.floor(player.style)}`, styleX + 6, styleY + 14);
+        // Special attack cooldown UI (moved below)
+        const cooldownWidth = 160;
+        const cooldownHeight = 18;
+        const cooldownX = 10;
+        const cooldownY = 90;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(cooldownX, cooldownY, cooldownWidth, cooldownHeight);
+        if (player.specialCooldown > 0) {
+            const ratio = 1 - player.specialCooldown / player.specialCooldownMax;
+            ctx.fillStyle = '#7CFC00';
+            ctx.fillRect(cooldownX + 1, cooldownY + 1, Math.max(0, (cooldownWidth - 2) * ratio), cooldownHeight - 2);
+            ctx.fillStyle = '#000';
+            ctx.font = '14px Arial';
+            ctx.fillText(`Special: ${Math.ceil(player.specialCooldown / 60)}s`, cooldownX + 6, cooldownY + 14);
+        } else {
+            ctx.fillStyle = '#7CFC00';
+            ctx.fillRect(cooldownX + 1, cooldownY + 1, cooldownWidth - 2, cooldownHeight - 2);
+            ctx.fillStyle = '#000';
+            ctx.font = '14px Arial';
+            ctx.fillText('Special Ready', cooldownX + 6, cooldownY + 14);
+        }
 
-    if (gameOver) {
+        // Draw message if active
+        if (messageActive && currentMessageIndex >= 0) {
+            const msgX = canvas.width - 300;
+            const msgY = 20;
+            const msgWidth = 280;
+            const msgHeight = 60;
+            ctx.fillStyle = 'rgba(0,0,0,0.8)';
+            ctx.fillRect(msgX, msgY, msgWidth, msgHeight);
+            ctx.strokeStyle = '#FFF';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(msgX, msgY, msgWidth, msgHeight);
+            ctx.fillStyle = '#FFF';
+            ctx.font = '16px Arial';
+            const typedText = messages[currentMessageIndex].text.substring(0, messageTypingIndex);
+            ctx.fillText(typedText, msgX + 10, msgY + 30);
+            // Placeholder icon
+            ctx.fillStyle = '#CCC';
+            ctx.fillRect(msgX + msgWidth - 40, msgY + 10, 30, 40);
+        }
+        if (killThresholdMessageActive) {
+            const msgX = canvas.width - 300;
+            const msgY = messageActive && currentMessageIndex >= 0 ? 90 : 20;
+            const msgWidth = 280;
+            const msgHeight = 60;
+            const parts = killThresholdMessageParts[killThresholdMessageIndex] || [];
+            const currentText = parts[killThresholdMessagePhase] || '';
+            const typedText = currentText.substring(0, killThresholdMessageTypingIndex);
+            ctx.fillStyle = 'rgba(0,0,0,0.8)';
+            ctx.fillRect(msgX, msgY, msgWidth, msgHeight);
+            ctx.strokeStyle = '#FFF';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(msgX, msgY, msgWidth, msgHeight);
+            ctx.fillStyle = '#FFF';
+            ctx.font = '16px Arial';
+            ctx.fillText(typedText, msgX + 10, msgY + 30);
+            ctx.fillStyle = '#CCC';
+            ctx.fillRect(msgX + msgWidth - 40, msgY + 10, 30, 40);
+        }
+        if (deathFreezeTimer > 0) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.15 * deathFreezeRatio})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = `rgba(180, 0, 0, ${0.35 * deathFreezeRatio})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        ctx.restore();
+    } else if (gameState === 'gameOver') {
+        // Draw game over screen
         ctx.fillStyle = 'rgba(0,0,0,0.5)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#FFF';
         ctx.font = '40px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2);
+        ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2 - 50);
+        ctx.font = '24px Arial';
+        ctx.fillText(`Kills: ${player.kills}`, canvas.width / 2, canvas.height / 2 + 10);
+        ctx.textAlign = 'left';
+
+        // Restart button
+        ctx.fillStyle = '#4CAF50';
+        ctx.fillRect(canvas.width / 2 - 50, canvas.height / 2 + 50, 100, 40);
+        ctx.fillStyle = '#FFF';
         ctx.font = '20px Arial';
-        ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 50);
+        ctx.textAlign = 'center';
+        ctx.fillText('Restart', canvas.width / 2, canvas.height / 2 + 75);
+        ctx.textAlign = 'left';
+
+        // Title button
+        ctx.fillStyle = '#2196F3';
+        ctx.fillRect(canvas.width / 2 - 50, canvas.height / 2 + 110, 100, 40);
+        ctx.fillStyle = '#FFF';
+        ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Title', canvas.width / 2, canvas.height / 2 + 135);
+        ctx.textAlign = 'left';
+
+        // Quit button
+        ctx.fillStyle = '#F44336';
+        ctx.fillRect(canvas.width / 2 - 50, canvas.height / 2 + 170, 100, 40);
+        ctx.fillStyle = '#FFF';
+        ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Quit', canvas.width / 2, canvas.height / 2 + 195);
         ctx.textAlign = 'left';
     }
 }
@@ -832,6 +1197,7 @@ function reset() {
     player.velocityY = 0;
     player.health = 3;
     player.immunity = 0;
+    player.immunitySource = null;
     player.facing = 1;
     player.dashing = false;
     player.dashTimer = 0;
@@ -843,21 +1209,38 @@ function reset() {
     player.attackEffect = null;
     player.heavyCooldown = 0;
     player.specialCooldown = 0;
+    player.points = 0;
+    player.style = 0;
+    player.lastAttackType = null;
+    player.kills = 0;
+    nextKillThresholdIndex = 0;
+    killThresholdMessageActive = false;
+    killThresholdMessagePhase = 0;
+    killThresholdMessageIndex = -1;
+    killThresholdMessageTypingIndex = 0;
+    killThresholdMessageTimer = 0;
+    killThresholdMessageDuration = 0;
     cameraX = 0;
-    gameOver = false;
+    deathFreezeTimer = 0;
+    gameState = 'playing';
     platforms = [];
     enemies = [];
     projectiles = [];
     healthPacks = [];
+    // Start message
+    currentMessageIndex = 0;
+    messageTypingIndex = 0;
+    messageTimer = 0;
+    messageActive = true;
     // regenerate
     for (let i = 0; i < 10; i++) {
         generatePlatform(i * 300);
     }
-    }
+}
+
+function startGame() {
+    reset();
+}
 
 // Start game
-// Initial platforms
-for (let i = 0; i < 10; i++) {
-    generatePlatform(i * 300);
-}
 gameLoop();
