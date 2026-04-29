@@ -1,6 +1,146 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+const playerSpriteSheet = new Image();
+playerSpriteSheet.src = '../assets/sprites/knight.png';
+
+const playerSpriteGridCols = 8;
+const playerSpriteGridRows = 8;
+const playerSpriteFallbackTileSize = 32;
+
+function getPlayerSpriteTileSize() {
+    if (playerSpriteSheet.complete && playerSpriteSheet.naturalWidth > 0 && playerSpriteSheet.naturalHeight > 0) {
+        return Math.floor(Math.min(
+            playerSpriteSheet.naturalWidth / playerSpriteGridCols,
+            playerSpriteSheet.naturalHeight / playerSpriteGridRows
+        ));
+    }
+    return playerSpriteFallbackTileSize;
+}
+
+function buildFrameList(specs) {
+    const frames = [];
+    for (const spec of specs) {
+        if (spec.cols) {
+            for (const col of spec.cols) {
+                frames.push({ row: spec.row, col });
+            }
+        } else {
+            const step = spec.startCol <= spec.endCol ? 1 : -1;
+            for (let col = spec.startCol; step > 0 ? col <= spec.endCol : col >= spec.endCol; col += step) {
+                frames.push({ row: spec.row, col });
+            }
+        }
+    }
+    return frames;
+}
+
+const playerSpriteAnimations = {
+    // 0-based mapping from user-provided 1-based sheet notes.
+    idle: {
+        frames: buildFrameList([{ row: 0, cols: [0, 1, 2] }]),
+        frameHold: 10
+    },
+    run: {
+        frames: buildFrameList([
+            { row: 2, startCol: 0, endCol: 7 },
+            { row: 3, startCol: 0, endCol: 7 }
+        ]),
+        frameHold: 5
+    },
+    jump: {
+        frames: buildFrameList([{ row: 2, startCol: 1, endCol: 4 }]),
+        frameHold: 8
+    },
+    dash: {
+        frames: buildFrameList([{ row: 5, startCol: 0, endCol: 7 }]),
+        frameHold: 3
+    },
+    hit: {
+        frames: buildFrameList([{ row: 6, startCol: 0, endCol: 4 }]),
+        frameHold: 8
+    },
+    death: {
+        frames: buildFrameList([{ row: 7, startCol: 0, endCol: 4 }]),
+        frameHold: 10
+    }
+};
+
+function getAnimationDurationFrames(name, loops = 1) {
+    const clip = playerSpriteAnimations[name];
+    if (!clip) return 1;
+    return Math.max(1, clip.frames.length * clip.frameHold * loops);
+}
+
+const playerActionTimings = {
+    dashDuration: getAnimationDurationFrames('dash'),
+    hitDuration: getAnimationDurationFrames('hit'),
+    deathDuration: getAnimationDurationFrames('death')
+};
+
+// Track current animation to avoid flickering
+let currentPlayerAnimation = 'idle';
+let playerAnimationFrame = 0;
+let playerAnimationTick = 0;
+
+function getPlayerSpriteFrame(animationName) {
+    const clip = playerSpriteAnimations[animationName] || playerSpriteAnimations.idle;
+    const totalFrames = Math.max(1, clip.frames.length);
+
+    if (currentPlayerAnimation !== animationName) {
+        currentPlayerAnimation = animationName;
+        playerAnimationFrame = 0;
+        playerAnimationTick = 0;
+    } else {
+        playerAnimationTick++;
+        if (playerAnimationTick >= clip.frameHold) {
+            playerAnimationTick = 0;
+            playerAnimationFrame = (playerAnimationFrame + 1) % totalFrames;
+        }
+    }
+
+    const frame = clip.frames[playerAnimationFrame] || { row: 0, col: 0 };
+    const tileSize = getPlayerSpriteTileSize();
+
+    return {
+        sx: frame.col * tileSize,
+        sy: frame.row * tileSize,
+        sw: tileSize,
+        sh: tileSize
+    };
+}
+
+// Function to determine which animation should be played
+function getPlayerAnimation() {
+    // Death has highest priority
+    if (deathFreezeTimer > 0) {
+        return 'death';
+    }
+    
+    // Getting hit
+    if (player.immunity > 0 && player.immunitySource !== 'dash') {
+        return 'hit';
+    }
+    
+    // Dashing
+    if (player.dashing) {
+        return 'dash';
+    }
+    
+    // In air (jumping/falling)
+    if (!player.onGround) {
+        return 'jump';
+    }
+    
+    // Moving
+    if (Math.abs(player.velocityX) > 0.5) {
+        return 'run';
+    }
+    
+    // Idle
+    return 'idle';
+}
+
 // Player object
 const player = {
     x: 100,
@@ -39,7 +179,7 @@ const player = {
 // Camera
 let cameraX = 0;
 let deathFreezeTimer = 0;
-const deathFreezeDuration = 84;
+const deathFreezeDuration = playerActionTimings.deathDuration;
 
 // Game state
 let gameState = 'title'; // 'title', 'playing', 'gameOver'
@@ -574,8 +714,8 @@ function update() {
         // Dashing
         if (keys.j && player.dashCooldown == 0 && !player.dashing) {
             player.dashing = true;
-            player.dashTimer = 12;
-            player.immunity = 12; // Temporary immunity during dash
+            player.dashTimer = playerActionTimings.dashDuration;
+            player.immunity = playerActionTimings.dashDuration; // Temporary immunity during dash
             player.immunitySource = 'dash';
             let xDir = 0;
             let yDir = 0;
@@ -712,7 +852,7 @@ function update() {
         if (checkCollision(p, player) && player.immunity == 0) {
             player.health--;
             player.style = Math.max(0, player.style - 10);
-            player.immunity = 180;
+            player.immunity = playerActionTimings.hitDuration;
             player.immunitySource = 'damage';
             p.life = 0;
             if (player.health <= 0) {
@@ -755,7 +895,7 @@ function update() {
             if (attackDirectionMatch) {
                 player.health--;
                 player.style = Math.max(0, player.style - 10);
-                player.immunity = 60; // 1 second at 60fps
+                player.immunity = playerActionTimings.hitDuration;
                 player.immunitySource = 'damage';
                 e.attackCooldown = 60;
                 e.attackState = null;
@@ -1038,15 +1178,52 @@ function draw() {
         }
 
         // Draw player
-        ctx.fillStyle = deathFreezeTimer > 0 ? '#000000' : (player.immunity > 0 ? getPlayerInvincibilityColor() : '#FF0000');
-        ctx.fillRect(player.x, player.y, player.width, player.height);
+        const playerAnimationName = getPlayerAnimation();
+        const frame = getPlayerSpriteFrame(playerAnimationName);
+        
+        // Draw the animation with proper scaling and mirroring
+        ctx.save();
+        
+        if (playerSpriteSheet.complete && playerSpriteSheet.naturalWidth > 0) {
+            const previousSmoothing = ctx.imageSmoothingEnabled;
+            ctx.imageSmoothingEnabled = false;
 
-        // Draw immunity visual
-        if (player.immunity > 0) {
-            ctx.strokeStyle = getPlayerInvincibilityColor();
-            ctx.lineWidth = 4;
-            ctx.strokeRect(player.x - 2, player.y - 2, player.width + 4, player.height + 4);
+            // Apply horizontal flip based on facing direction
+            if (player.facing === -1) {
+                ctx.scale(-1, 1);
+                ctx.drawImage(
+                    playerSpriteSheet,
+                    frame.sx,
+                    frame.sy,
+                    frame.sw,
+                    frame.sh,
+                    -player.x - player.width,
+                    player.y,
+                    player.width,
+                    player.height
+                );
+            } else {
+                ctx.drawImage(
+                    playerSpriteSheet,
+                    frame.sx,
+                    frame.sy,
+                    frame.sw,
+                    frame.sh,
+                    player.x,
+                    player.y,
+                    player.width,
+                    player.height
+                );
+            }
+
+            ctx.imageSmoothingEnabled = previousSmoothing;
+        } else {
+            // Fallback while images are loading or if a file path is invalid
+            ctx.fillStyle = '#FF0000';
+            ctx.fillRect(player.x, player.y, player.width, player.height);
         }
+        
+        ctx.restore();
 
         // Restore context
         ctx.restore();
